@@ -1,5 +1,6 @@
 # Ignored directories
 [PUB] India_runs_data_and_ai_challenge/
+India_runs_data_and_ai_challenge/
 __MACOSX/
 __pycache__/
 .venv/
