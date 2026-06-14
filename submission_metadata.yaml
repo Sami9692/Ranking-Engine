@@ -17,7 +17,7 @@ team_members:
 # ============================================================================
 # Code and reproducibility
 # ============================================================================
-github_repo: "https://github.com/antigravity-ai/redrob-candidate-vetting"
+github_repo: "https://github.com/Sami9692/Ranking-Engine.git"
 sandbox_link: "https://huggingface.co/spaces/antigravity-ai/redrob-recruiter-dashboard"
 reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
 
