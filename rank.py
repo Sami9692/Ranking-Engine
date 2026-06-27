@@ -51,8 +51,8 @@ def main():
     print(f"Total processed: {count}")
     print(f"Total qualifying fits: {len(scored_candidates)}")
     
-    # Deterministic tie-breaking: Sort by score descending, then candidate_id ascending (alphabetically)
-    scored_candidates.sort(key=lambda x: (-x[0], x[2]))
+    # Deterministic tie-breaking: Sort by rounded score descending, then candidate_id ascending (alphabetically)
+    scored_candidates.sort(key=lambda x: (-round(x[0] / 100.0, 4), x[2]))
     
     # Get top 100
     top_100 = scored_candidates[:100]
