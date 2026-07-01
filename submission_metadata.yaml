@@ -2,17 +2,23 @@
 # ============================================================================
 # Team identity
 # ============================================================================
-team_name: "Antigravity Engineers"  # Used in leaderboard and announcements
+team_name: "no-one"  # Used in leaderboard and announcements
 
 primary_contact:
-  name: "Antigravity Pair"
-  email: "pair@deepmind.google"   # Used for all organizer communication
-  phone: "+91-9876543210"        # Used for top-50 / top-10 outreach
+  name: "Sami S Mirjannavar"
+  email: "sami220550@gmail.com"   # Used for all organizer communication
+  phone: "+91-9972189692"        # Used for top-50 / top-10 outreach
 
 team_members:
-  - name: "Antigravity AI"
-    email: "pair@deepmind.google"
+  - name: "Joshil Roshan Pinto"
+    email: "joshilroshan115@gmail.com"
     role: "ML Engineer"
+    
+  - name: "Sami S Mirjannavar"
+    email: "sami220550@gmail.com"
+    role: "ML Engineer"
+
+  
 
 # ============================================================================
 # Code and reproducibility
