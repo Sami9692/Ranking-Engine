@@ -3,6 +3,33 @@ from datetime import datetime
 
 CURRENT_DATE = datetime(2026, 6, 14)
 
+# Lazy loading of Sentence-Transformers
+SentenceTransformer = None
+util = None
+try:
+    from sentence_transformers import SentenceTransformer as ST, util as ST_util
+    SentenceTransformer = ST
+    util = ST_util
+except ImportError:
+    pass
+
+_model_cache = {}
+
+def get_embedding_model(model_name="all-MiniLM-L6-v2"):
+    """
+    Lazily loads and caches the Sentence-Transformer model.
+    """
+    if SentenceTransformer is None:
+        return None
+    if model_name not in _model_cache:
+        try:
+            # Force CPU execution to ensure compatibility and low memory footprint
+            _model_cache[model_name] = SentenceTransformer(model_name, device="cpu")
+        except Exception as e:
+            print(f"Warning: Could not load embedding model '{model_name}': {e}. Using TF-IDF fallback.")
+            _model_cache[model_name] = None
+    return _model_cache[model_name]
+
 def parse_date(d_str):
     if not d_str:
         return None
@@ -31,7 +58,7 @@ def check_mismatched_job(t, d):
     d = d.lower()
     
     # Non-tech titles vs tech descriptions
-    is_non_tech_title = any(kw in t for kw in ["accountant", "marketing", "hr", "sales", "support", "graphic", "content writer"])
+    is_non_tech_title = any(kw in t for kw in ["accountant", "marketing", "hr", "sales", "support", "graphic", "content writer", "receptionist"])
     is_tech_desc = any(kw in d for kw in [
         "spark", "kafka", "pipeline", "predictive modeling", "nlp pipeline", 
         "recommendation-style", "semantic search", "fine-tuned llama", 
@@ -49,7 +76,7 @@ def check_mismatched_job(t, d):
         return True
         
     # Tech titles vs non-tech descriptions
-    is_tech_title = any(kw in t for kw in ["engineer", "ml", "ai", "developer", "scientist", "analyst"])
+    is_tech_title = any(kw in t for kw in ["engineer", "ml", "ai", "developer", "scientist", "analyst", "programmer"])
     is_non_tech_desc = any(kw in d for kw in [
         "customer support team lead", "mechanical engineering design role", 
         "content writing and seo", "brand design and creative", 
@@ -91,17 +118,116 @@ def sk_name_proper(kw):
     }
     return mapping.get(kw.lower(), kw)
 
-
-def compute_semantic_score(career_text):
-    career_text = career_text.lower()
+def parse_job_description(jd_text):
+    """
+    Dynamically extracts required skills, experience level, and target titles from a Job Description.
+    """
+    if not jd_text or len(jd_text.strip()) < 10:
+        # Default to original challenge JD (AI/ML Vector Search Role)
+        return {
+            "skills": ["embeddings", "vector search", "evaluation", "fine-tuning"],
+            "min_yoe": 5,
+            "max_yoe": 9,
+            "titles": ["ai engineer", "ml engineer", "machine learning engineer", "nlp engineer", "data scientist", "research engineer"]
+        }
+        
+    jd_lower = jd_text.lower()
     
-    # Tokenize by finding all word sequences
+    # 1. Extract skills from a comprehensive vocabulary list
+    vocab = [
+        "embeddings", "sentence-transformers", "sentence transformers", "bge", "e5",
+        "vector db", "vector search", "pinecone", "weaviate", "qdrant", "milvus", "opensearch", "elasticsearch", "faiss", "pgvector",
+        "ndcg", "mrr", "map", "evaluation", "ab test", "a/b test",
+        "lora", "qlora", "peft", "fine-tuning", "fine-tuning llms", "llm fine-tuning", "sft",
+        "learning to rank", "ltr", "ranking models", "re-ranking", "re-ranker", "xgboost", "lightgbm",
+        "nlp", "natural language processing", "information retrieval", "ir",
+        "python", "pytorch", "tensorflow", "scikit-learn", "keras",
+        "kubernetes", "docker", "aws", "gcp", "azure", "ci/cd", "pipeline", "pyspark", "spark", "kafka", "airflow", "snowflake",
+        "backend", "frontend", "fullstack", "react", "node", "javascript", "typescript", "java", "golang", "c++", "sql", "nosql",
+        "devops", "mlops", "ci/cd", "jenkins", "terraform", "ansible"
+    ]
+    extracted_skills = []
+    for skill in vocab:
+        if re.search(r'\b' + re.escape(skill) + r'\b', jd_lower):
+            extracted_skills.append(skill)
+            
+    if not extracted_skills:
+        # Fallback to some generic nouns in the text if nothing matched
+        words = re.findall(r'\b[a-z]{3,15}\b', jd_lower)
+        # Filter out common stop words
+        stopwords = {"and", "the", "for", "with", "you", "will", "our", "are", "that", "this", "from", "have", "role", "team", "work", "experience"}
+        extracted_skills = list(set([w for w in words if w not in stopwords]) - set(extracted_skills))[:5]
+        
+    # 2. Extract Years of Experience
+    min_yoe = 4
+    max_yoe = 12
+    # Matches: "5+ years", "5-9 years", "5 years", "at least 5 years", "5+ yoe"
+    yoe_matches = re.findall(r'(\d+)\s*(?:-|to)?\s*(\d+)?\s*(?:years?|yrs?|yoe)(?:\s+of)?\s*(?:experience|exp)?', jd_lower)
+    if yoe_matches:
+        try:
+            val1 = int(yoe_matches[0][0])
+            if yoe_matches[0][1]:
+                val2 = int(yoe_matches[0][1])
+                min_yoe = max(0, val1)
+                max_yoe = val2
+            else:
+                min_yoe = max(0, val1)
+                max_yoe = min_yoe + 4
+        except ValueError:
+            pass
+
+    # 3. Extract Titles
+    titles_vocab = [
+        "machine learning engineer", "ml engineer", "ai engineer", "artificial intelligence engineer",
+        "nlp engineer", "data scientist", "research engineer", "backend engineer", "software engineer",
+        "frontend engineer", "fullstack engineer", "devops engineer", "data engineer", "qa engineer",
+        "product manager", "project manager", "scrum master"
+    ]
+    extracted_titles = []
+    for title in titles_vocab:
+        if title in jd_lower:
+            extracted_titles.append(title)
+            
+    if not extracted_titles:
+        # Fallback to general terms
+        extracted_titles = ["engineer", "developer", "scientist", "analyst", "manager"]
+        
+    return {
+        "skills": extracted_skills[:10], # Cap at top 10 skills
+        "min_yoe": min_yoe,
+        "max_yoe": max_yoe,
+        "titles": extracted_titles
+    }
+
+def compute_tfidf_similarity(jd_text, candidate_text):
+    """
+    Computes TF-IDF cosine similarity between Job Description and Candidate Profile.
+    Used as a fast Stage-1 lexical scorer or as a Stage-2 fallback.
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+        vectorizer = TfidfVectorizer(stop_words='english')
+        tfidf = vectorizer.fit_transform([jd_text, candidate_text])
+        return float(cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0])
+    except Exception:
+        # Simple Jaccard similarity fallback if sklearn fails
+        jd_words = set(re.findall(r'\b\w+\b', jd_text.lower()))
+        cand_words = set(re.findall(r'\b\w+\b', candidate_text.lower()))
+        if not jd_words:
+            return 0.0
+        return len(jd_words.intersection(cand_words)) / len(jd_words)
+
+def compute_fallback_semantic_score(career_text):
+    """
+    The original rule-based keyword density scoring function for backwards compatibility.
+    """
+    career_text = career_text.lower()
     words = re.findall(r'\b\w+\b', career_text)
     doc_len = len(words)
     if doc_len == 0:
         return 0.0
         
-    # Clusters of terms and weights based on JD key priorities
     term_clusters = [
         (["embeddings", "dense retrieval", "semantic search", "dense vectors", "bi-encoder", "cross-encoder", "dense search"], 2.0),
         (["sentence-transformers", "sentence transformers", "bge", "e5", "mpnet"], 2.0),
@@ -116,27 +242,23 @@ def compute_semantic_score(career_text):
     avg_len = 150.0
     k1 = 1.2
     b = 0.75
-    
     total_score = 0.0
     
     for terms, weight in term_clusters:
         freq = 0
         for term in terms:
             freq += career_text.count(term)
-            
         if freq > 0:
             tf_factor = (freq * (k1 + 1)) / (freq + k1 * (1.0 - b + b * (doc_len / avg_len)))
             total_score += weight * tf_factor
             
     return total_score
 
-
-def generate_reasoning(profile, career, signals, score, skills_found):
+def generate_reasoning(profile, career, signals, score, skills_found, jd_info):
     yoe = profile.get("years_of_experience", 0)
     title = profile.get("current_title", "AI/ML Engineer")
     company = profile.get("current_company", "")
     
-    # 1. Deterministic opening clause variation based on anonymized name
     company_phrase = f" at {company}" if company else ""
     op_hash = sum(ord(c) for c in profile.get("anonymized_name", "")) % 3
     if op_hash == 0:
@@ -146,14 +268,8 @@ def generate_reasoning(profile, career, signals, score, skills_found):
     else:
         opening = f"Experienced {title}{company_phrase} ({yoe:.1f} YoE) with demonstrated capability in applied systems."
         
-    # 2. Technical fit description
-    skills_map = {
-        "embeddings": "embeddings-based retrieval",
-        "vectordb": "vector databases/hybrid search",
-        "eval": "ranking evaluation (NDCG/MRR)",
-        "llm_finetuning": "LLM fine-tuning"
-    }
-    found_desc = [skills_map[s] for s in skills_found if s in skills_map]
+    # Technical fit description
+    found_desc = [sk_name_proper(s) for s in skills_found]
     
     if len(found_desc) >= 3:
         tech_clause = f"Directly matches core JD needs in {', '.join(found_desc[:-1])}, and {found_desc[-1]}."
@@ -162,22 +278,24 @@ def generate_reasoning(profile, career, signals, score, skills_found):
     elif len(found_desc) == 1:
         tech_clause = f"Well-versed in {found_desc[0]}, though adjacent areas can be picked up quickly."
     else:
-        tech_clause = "Brings general software engineering and ML experience."
+        tech_clause = "Brings general software engineering and technical experience."
 
-    # 3. Location, notice period and honest concern checks
+    # Location, notice period and honest concern checks
     loc = profile.get("location", "").split(",")[0].strip()
     np_days = signals.get("notice_period_days", 90)
     
     concerns = []
     if np_days > 60:
         concerns.append(f"notice period of {np_days}d is longer than preferred")
-    if len(found_desc) < 3:
-        missing_skills = [skills_map[s] for s in skills_map if s not in skills_found]
-        if missing_skills:
-            concerns.append(f"lacks direct experience in {missing_skills[0]}")
+        
+    # Find missing skills from the JD
+    jd_skills = jd_info.get("skills", [])
+    missing_skills = [s for s in jd_skills if s.lower() not in [sf.lower() for sf in skills_found]]
+    if missing_skills:
+        concerns.append(f"lacks direct experience in {sk_name_proper(missing_skills[0])}")
             
     loc_phrase = ""
-    if loc.lower() in ["noida", "pune"]:
+    if loc.lower() in ["noida", "pune", "delhi", "gurgaon", "ncr"]:
         loc_phrase = f"located in {loc} (ideal office location)"
     else:
         loc_phrase = f"{loc}-based"
@@ -189,20 +307,36 @@ def generate_reasoning(profile, career, signals, score, skills_found):
     else:
         concern_str = " Fits candidate availability constraints perfectly."
         
-    # Combine clauses to produce natural, dynamic reasonings
     reasoning = f"{opening} {tech_clause} {loc_phrase} with {np_days}d notice.{concern_str}"
     return reasoning
 
-
-def score_candidate(cand):
+def score_candidate(cand, jd_text=None, weights=None, jd_info=None, model=None, jd_embedding=None):
+    """
+    Computes a composite score (0-100%) for a candidate based on JD alignment and behavioral signals.
+    Supports dynamic weights and JD criteria.
+    """
     profile = cand.get("profile", {})
     career = cand.get("career_history", [])
     signals = cand.get("redrob_signals", {})
     skills_list = cand.get("skills", [])
     skills = {s['name'].lower(): s for s in skills_list}
     
-    # 1. HARD FILTER FOR ANOMALIES (HONEYPOTS & TRAPS)
-    # Return 0.0, "reason" if any anomaly is found
+    # 1. Parse JD if not provided
+    if not jd_info:
+        jd_info = parse_job_description(jd_text)
+    if not jd_text:
+        jd_text = "AI/ML Engineer specializing in vector search, embeddings, evaluation, and LLM fine-tuning."
+        
+    # Default weights
+    if not weights:
+        weights = {"skills": 0.35, "experience": 0.25, "location": 0.15, "behavior": 0.25}
+
+    # Normalize weights to sum to 1.0
+    total_w = sum(weights.values())
+    if total_w > 0:
+        weights = {k: v / total_w for k, v in weights.items()}
+    
+    # 2. HARD FILTER FOR ANOMALIES (HONEYPOTS & TRAPS)
     signup_dt = parse_date(signals.get("signup_date"))
     last_active_dt = parse_date(signals.get("last_active_date"))
     if signup_dt and last_active_dt and last_active_dt < signup_dt:
@@ -230,80 +364,82 @@ def score_candidate(cand):
         if check_mismatched_job(job.get("title", ""), job.get("description", "")):
             return 0.0, "Anomaly: career job title-description mismatch"
             
-    # Honeypot Check: Job duration exceeding years of experience
     yoe = profile.get("years_of_experience", 0)
     for job in career:
         if job.get("duration_months", 0) / 12.0 > yoe + 0.1:
             return 0.0, "Anomaly: career history job duration exceeds total years of experience"
 
-    # Honeypot Check: Expert proficiency in skills with 0 years used
     expert_zero_dur_count = sum(1 for s in skills_list if s.get("proficiency") == "expert" and s.get("duration_months", 0) == 0)
     if expert_zero_dur_count >= 5:
         return 0.0, "Anomaly: expert proficiency in multiple skills with 0 duration"
             
-    # 2. POSITION & EXPERIENCE SCORE
-    yoe = profile.get("years_of_experience", 0)
-    if yoe < 4.0 or yoe > 15.0:
+    # 3. POSITION & EXPERIENCE SCORE
+    target_min = jd_info.get("min_yoe", 4)
+    target_max = jd_info.get("max_yoe", 12)
+    
+    # Absolute bounds (with small buffers)
+    if yoe < max(0, target_min - 1) or yoe > (target_max + 6):
         return 0.0, "YoE outside valid engineering range"
         
-    # Experience scoring: target 5-9 years.
-    if 5.0 <= yoe <= 9.0:
+    # Experience scoring
+    if target_min <= yoe <= target_max:
         exp_score = 100
-    elif 4.0 <= yoe < 5.0:
-        exp_score = 70 + (yoe - 4.0) * 30
-    elif 9.0 < yoe <= 12.0:
-        exp_score = 100 - (yoe - 9.0) * 10
-    else: # 12 to 15
-        exp_score = 70 - (yoe - 12.0) * 20
+    elif (target_min - 1) <= yoe < target_min:
+        exp_score = 70 + (yoe - (target_min - 1)) * 30
+    elif target_max < yoe <= (target_max + 3):
+        exp_score = 100 - (yoe - target_max) * 10
+    else: # target_max + 3 to target_max + 6
+        exp_score = 70 - (yoe - (target_max + 3)) * 10
         
-    # Current Title check
+    # Current Title Check
     curr_title = profile.get("current_title", "").lower()
+    target_titles = jd_info.get("titles", [])
     title_score = 0
-    if any(kw in curr_title for kw in ["ai engineer", "ml engineer", "machine learning engineer", "nlp engineer"]):
-        title_score = 100
-    elif "data scientist" in curr_title or "research engineer" in curr_title:
-        title_score = 85
-    elif "backend engineer" in curr_title or "software engineer" in curr_title or "developer" in curr_title:
-        title_score = 70
-    else:
-        return 0.0, f"Irrelevant title: {curr_title}"
-        
-    # 3. TECHNICAL & SKILLS MATCHING
-    core_skills = {
-        "embeddings": ["embeddings", "sentence-transformers", "sentence transformers", "bge", "e5"],
-        "vectordb": ["vector db", "vector search", "pinecone", "weaviate", "qdrant", "milvus", "opensearch", "elasticsearch", "faiss"],
-        "eval": ["ndcg", "mrr", "map", "evaluation"],
-        "llm_finetuning": ["lora", "qlora", "peft", "fine-tuning", "fine-tuning llms", "llm fine-tuning"]
-    }
     
+    if any(title in curr_title for title in target_titles):
+        title_score = 100
+    elif any(word in curr_title for title in target_titles for word in title.split() if len(word) > 3):
+        title_score = 80
+    elif any(kw in curr_title for kw in ["engineer", "developer", "scientist", "programmer", "architect"]):
+        title_score = 60
+    else:
+        # Exclude completely non-tech roles if this is a tech JD
+        is_tech_jd = any(kw in jd_text.lower() for kw in ["engineer", "developer", "scientist", "programmer", "tech", "architect"])
+        if is_tech_jd:
+            return 0.0, f"Irrelevant title for technical role: {curr_title}"
+        title_score = 40
+        
+    exp_title_weighted = (exp_score * 0.4 + title_score * 0.6)
+
+    # 4. TECHNICAL & SKILLS MATCHING
+    jd_skills = jd_info.get("skills", [])
     skills_found = set()
     skill_points = 0
     
     career_text = " ".join([job.get("description", "").lower() for job in career]) + " " + profile.get("summary", "").lower()
     
-    for category, kws in core_skills.items():
-        found_in_list = False
-        for kw in kws:
-            if kw in skills:
-                # Skill is in the skills list
-                # Verify if it's also in descriptions or summary (to avoid pure keyword stuffers)
-                if kw in career_text or any(w in career_text for w in kw.split()):
-                    found_in_list = True
-                    break
-        if found_in_list:
-            skills_found.add(category)
-            skill_points += 25
-        else:
-            found_in_desc = False
-            for kw in kws:
-                if kw in career_text:
-                    found_in_desc = True
-                    break
-            if found_in_desc:
-                skills_found.add(category)
-                skill_points += 15
-                
-    # 4. EXCLUSIONS & RESTRICTIONS
+    if jd_skills:
+        for skill_name in jd_skills:
+            skill_name_lower = skill_name.lower()
+            # If candidate declared the skill
+            if skill_name_lower in skills:
+                # Anti-keyword-stuffing: check if skill is mentioned in career descriptions
+                if skill_name_lower in career_text or any(w in career_text for w in skill_name_lower.split() if len(w) > 3):
+                    skills_found.add(skill_name_lower)
+                    skill_points += (100.0 / len(jd_skills))
+                else:
+                    # Penalized score for declared but unmentioned skill
+                    skills_found.add(skill_name_lower)
+                    skill_points += (50.0 / len(jd_skills))
+            else:
+                # Not declared, but present in career history
+                if skill_name_lower in career_text or any(w in career_text for w in skill_name_lower.split() if len(w) > 3):
+                    skills_found.add(skill_name_lower)
+                    skill_points += (60.0 / len(jd_skills))
+    else:
+        skill_points = 50 # Neutral default if no skills found in JD
+
+    # 5. EXCLUSIONS & RESTRICTIONS (Industry & Sub-Domain Checks)
     # Consulting check
     all_consulting = True
     has_career = False
@@ -315,13 +451,15 @@ def score_candidate(cand):
     if has_career and all_consulting:
         return 0.0, "Excluded: exclusively consulting company background"
         
-    # CV/Speech/Robotics Check
-    has_nlp_ir = "embeddings" in skills_found or "vectordb" in skills_found or any(kw in career_text for kw in ["nlp", "retrieval", "search", "ranking", "recommendation", "information retrieval"])
-    has_cv_speech_robot = any(kw in career_text or kw in skills for kw in ["computer vision", "opencv", "image classification", "object detection", "cnn", "speech recognition", "tts", "robotics", "speech to text", "text to speech"])
-    if has_cv_speech_robot and not has_nlp_ir:
-        return 0.0, "Excluded: primary CV/speech/robotics without NLP/IR"
+    # Subdomain exclusion (e.g. CV/Speech/Robotics without NLP/IR, only if JD is NLP/IR focused)
+    has_nlp_ir_jd = any(kw in jd_text.lower() for kw in ["nlp", "embeddings", "vector", "search", "retrieval", "text", "language", "translation", "llm"])
+    if has_nlp_ir_jd:
+        has_nlp_ir = len(skills_found.intersection({"embeddings", "vector search", "vector db", "nlp"})) > 0 or any(kw in career_text for kw in ["nlp", "retrieval", "search", "ranking", "recommendation", "information retrieval"])
+        has_cv_speech_robot = any(kw in career_text or kw in skills for kw in ["computer vision", "opencv", "image classification", "object detection", "cnn", "speech recognition", "tts", "robotics", "speech to text", "text to speech"])
+        if has_cv_speech_robot and not has_nlp_ir:
+            return 0.0, "Excluded: primary CV/speech/robotics without NLP/IR"
         
-    # Pure research exclusion check
+    # Pure academic research exclusion check
     all_research = True
     has_production = False
     prod_kws = ["production", "deploy", "scale", "kubernetes", "docker", "aws", "gcp", "azure", "ci/cd", "pipeline", "infrastructure", "latency", "optimization", "monitoring"]
@@ -342,40 +480,58 @@ def score_candidate(cand):
     if has_career and all_research and not has_production:
         return 0.0, "Excluded: purely academic/research career without production deployment"
         
-    # Langchain-only exclusion check
-    has_llm_wrappers = any(kw in career_text for kw in ["langchain", "llamaindex", "openai", "gpt"])
-    has_classic_ml = any(kw in career_text or kw in skills for kw in ["pytorch", "tensorflow", "scikit-learn", "keras", "xgboost", "lightgbm", "regression", "svm", "random forest", "spacy", "nltk", "fasttext", "bert", "embeddings", "ranking", "retrieval"])
-    if has_llm_wrappers and not has_classic_ml:
-        return 0.0, "Excluded: LangChain-only experience without underlying ML foundations"
+    # Langchain-only exclusion check (Only if JD mentions AI/ML/LLMs)
+    has_ai_jd = any(kw in jd_text.lower() for kw in ["ai", "ml", "machine learning", "llm", "deep learning"])
+    if has_ai_jd:
+        has_llm_wrappers = any(kw in career_text for kw in ["langchain", "llamaindex", "openai", "gpt"])
+        has_classic_ml = any(kw in career_text or kw in skills for kw in ["pytorch", "tensorflow", "scikit-learn", "keras", "xgboost", "lightgbm", "regression", "svm", "random forest", "spacy", "nltk", "fasttext", "bert", "embeddings", "ranking", "retrieval"])
+        if has_llm_wrappers and not has_classic_ml:
+            return 0.0, "Excluded: LangChain-only experience without underlying ML foundations"
         
     # Title chaser exclusion check
     if len(career) >= 3:
         total_months = sum(job.get("duration_months", 0) for job in career)
         avg_months = total_months / len(career)
-        curr_title = profile.get("current_title", "").lower()
         is_high_title = any(t in curr_title for t in ["lead", "staff", "principal", "director", "manager"])
         if avg_months < 18.0 and is_high_title:
             return 0.0, "Excluded: title chaser with short job durations"
         
-    # 5. LOCATION SCORE
+    # 6. LOCATION SCORE
     country = profile.get("country", "").lower()
     loc = profile.get("location", "").lower()
     
+    # Try to extract target locations from JD
+    target_locations = []
+    for city in ["noida", "pune", "delhi", "gurgaon", "ncr", "mumbai", "bangalore", "bengaluru", "hyderabad", "chennai"]:
+        if city in jd_text.lower():
+            target_locations.append(city)
+            
     location_score = 0
     if country == "india":
-        if "noida" in loc or "pune" in loc or "delhi" in loc or "gurgaon" in loc or "ncr" in loc:
-            location_score = 100
-        elif "mumbai" in loc or "hyderabad" in loc or "bangalore" in loc or "bengaluru" in loc:
-            location_score = 90
+        if target_locations:
+            if any(tl in loc for tl in target_locations):
+                location_score = 100
+            elif any(tl in ["delhi", "gurgaon", "noida", "ncr"] for tl in target_locations) and any(l in loc for l in ["delhi", "gurgaon", "noida", "ncr"]):
+                location_score = 100  # NCR grouping
+            elif "bangalore" in loc or "bengaluru" in loc or "hyderabad" in loc or "mumbai" in loc:
+                location_score = 85
+            else:
+                location_score = 70
         else:
-            location_score = 70
+            # Default NCR / Pune preference from original spec
+            if "noida" in loc or "pune" in loc or "delhi" in loc or "gurgaon" in loc or "ncr" in loc:
+                location_score = 100
+            elif "mumbai" in loc or "hyderabad" in loc or "bangalore" in loc or "bengaluru" in loc:
+                location_score = 90
+            else:
+                location_score = 70
     else:
         if signals.get("willing_to_relocate", False):
             location_score = 30
         else:
             location_score = 10
             
-    # 6. BEHAVIORAL SIGNALS & AVAILABILITY
+    # 7. BEHAVIORAL SIGNALS & AVAILABILITY
     np_days = signals.get("notice_period_days", 90)
     if np_days <= 30:
         np_score = 100
@@ -391,7 +547,7 @@ def score_candidate(cand):
     
     last_act = parse_date(signals.get("last_active_date"))
     if last_act:
-        days_inactive = (current_date_diff(last_act)).days
+        days_inactive = (CURRENT_DATE - last_act).days
         if days_inactive <= 30:
             act_score = 100
         elif days_inactive <= 90:
@@ -404,27 +560,46 @@ def score_candidate(cand):
         act_score = 0
         
     otw_boost = 1.1 if signals.get("open_to_work_flag", False) else 1.0
-    
-    # Hybrid skills score: 40% declared skills + 60% semantic career text matching JD
-    sem_score_raw = compute_semantic_score(career_text)
-    sem_score = min(100.0, (sem_score_raw / 15.0) * 100.0)
-    skills_weighted = (skill_points * 0.4 + sem_score * 0.6)
-    
-    exp_title_weighted = (exp_score * 0.4 + title_score * 0.6)
-    loc_weighted = location_score
     behavior_weighted = (np_score * 0.4 + rr_score * 0.3 + act_score * 0.3) * otw_boost
     
+    # 8. SEMANTIC SIMILARITY MATCHING (DENSE OR SPARSE FALLBACK)
+    if model and jd_embedding is not None:
+        # Encode candidate profile text
+        cand_text = f"{profile.get('current_title', '')} {profile.get('summary', '')} {career_text}"
+        try:
+            cand_embedding = model.encode(cand_text, convert_to_tensor=True)
+            sem_sim = float(util.cos_sim(jd_embedding, cand_embedding)[0][0])
+            # Scale cosine similarity from [0.1, 0.6] -> [0, 100]
+            sem_score = min(100.0, max(0.0, (sem_sim - 0.1) / 0.5 * 100.0))
+        except Exception:
+            # Fallback to TF-IDF if model encoding fails
+            tfidf_sim = compute_tfidf_similarity(jd_text, cand_text)
+            sem_score = min(100.0, tfidf_sim * 100.0 * 1.5)
+    else:
+        # Fallback to TF-IDF / Heuristic
+        cand_text = f"{profile.get('current_title', '')} {profile.get('summary', '')} {career_text}"
+        # If it matches the default AI/ML JD exactly, use the original heuristic semantic score
+        if "vector search" in jd_text.lower() and "embeddings" in jd_text.lower():
+            sem_score_raw = compute_fallback_semantic_score(career_text)
+            sem_score = min(100.0, (sem_score_raw / 15.0) * 100.0)
+        else:
+            tfidf_sim = compute_tfidf_similarity(jd_text, cand_text)
+            sem_score = min(100.0, tfidf_sim * 100.0 * 1.5)
+            
+    skills_weighted = (skill_points * 0.4 + sem_score * 0.6)
+    
+    # 9. COMPOSITE SCORE
     composite_score = (
-        skills_weighted * 0.35 +
-        exp_title_weighted * 0.25 +
-        loc_weighted * 0.15 +
-        behavior_weighted * 0.25
+        skills_weighted * weights.get("skills", 0.35) +
+        exp_title_weighted * weights.get("experience", 0.25) +
+        location_score * weights.get("location", 0.15) +
+        behavior_weighted * weights.get("behavior", 0.25)
     )
     
-    # 7. GENERATING SPECIFIC, HONEST REASONING
-    reasoning = generate_reasoning(profile, career, signals, composite_score, skills_found)
+    # Cap score between 0 and 100
+    composite_score = min(100.0, max(0.0, composite_score))
+    
+    # 10. GENERATING REASONING
+    reasoning = generate_reasoning(profile, career, signals, composite_score, skills_found, jd_info)
     
     return composite_score, reasoning
-
-def current_date_diff(d):
-    return CURRENT_DATE - d
