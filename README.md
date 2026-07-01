@@ -1,4 +1,15 @@
-# Redrob AI Talent Vetting & Intelligent Ranking System
+---
+title: recruiter-dashboard
+emoji: 💼
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: 1.30.0
+app_file: app.py
+pinned: false
+---
+
+# AI Talent Vetting & Intelligent Ranking System
 
 An AI-powered candidate ranking and vetting system built for the Redrob Challenge. Rather than relying on simple keyword-matching filters (which are easily gamed and miss high-quality fits), this system simulates the judgment of an expert recruiter by **fully understanding profile consistency, career histories, and behavioral availability signals.**
 
